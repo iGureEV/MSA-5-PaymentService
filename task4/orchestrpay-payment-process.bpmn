@@ -1,0 +1,793 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:zeebe="http://camunda.org/schema/zeebe/1.0" xmlns:camunda="http://camunda.org/schema/1.0/bpmn" targetNamespace="http://orchestrpay.com/bpmn" exporter="Camunda Modeler" exporterVersion="5.43.1" xsi:schemaLocation="http://www.omg.org/spec/BPMN/20100524/MODEL BPMN20.xsd">
+  <process id="orchestrpay-payment-process" name="OrchestrPay Payment Processing" isExecutable="true">
+    <startEvent id="StartEvent_Payment" name="Payment Initiated">
+      <outgoing>SequenceFlow_Start_Create</outgoing>
+    </startEvent>
+    <serviceTask id="Task_CreatePayment" name="CREATE_PAYMENT">
+      <extensionElements>
+        <zeebe:taskDefinition type="create-payment" retries="3" />
+      </extensionElements>
+      <incoming>SequenceFlow_Start_Create</incoming>
+      <outgoing>SequenceFlow_Create_Reserve</outgoing>
+    </serviceTask>
+    <serviceTask id="Task_ReserveFunds" name="RESERVE_FUNDS">
+      <extensionElements>
+        <zeebe:taskDefinition type="reserve-funds" retries="3" />
+      </extensionElements>
+      <incoming>SequenceFlow_Create_Reserve</incoming>
+      <outgoing>SequenceFlow_Reserve_Parallel</outgoing>
+    </serviceTask>
+    <parallelGateway id="ParallelGateway_StartParallel" name="Start Parallel">
+      <incoming>SequenceFlow_Reserve_Parallel</incoming>
+      <outgoing>SequenceFlow_Parallel_Debit</outgoing>
+      <outgoing>SequenceFlow_Parallel_Fraud</outgoing>
+    </parallelGateway>
+    <serviceTask id="Task_DebitFunds" name="DEBIT_FUNDS">
+      <extensionElements>
+        <zeebe:taskDefinition type="debit-funds" retries="3" />
+      </extensionElements>
+      <incoming>SequenceFlow_Parallel_Debit</incoming>
+      <outgoing>SequenceFlow_Debit_Join</outgoing>
+    </serviceTask>
+    <serviceTask id="Task_FraudCheck" name="REQUEST_FRAUD_CHECK">
+      <extensionElements>
+        <zeebe:taskDefinition type="fraud-check" retries="3" />
+      </extensionElements>
+      <incoming>SequenceFlow_Parallel_Fraud</incoming>
+      <outgoing>SequenceFlow_Fraud_Join</outgoing>
+    </serviceTask>
+    <parallelGateway id="ParallelGateway_JoinParallel" name="Join Parallel">
+      <incoming>SequenceFlow_Debit_Join</incoming>
+      <incoming>SequenceFlow_Fraud_Join</incoming>
+      <outgoing>SequenceFlow_Join_FraudDecision</outgoing>
+      <outgoing>Flow_05tmgla</outgoing>
+    </parallelGateway>
+    <exclusiveGateway id="Gateway_FraudDecision" name="Fraud Decision">
+      <incoming>SequenceFlow_Join_FraudDecision</incoming>
+      <incoming>Flow_05tmgla</incoming>
+      <outgoing>SequenceFlow_Fraud_Allow</outgoing>
+      <outgoing>SequenceFlow_Fraud_Manual</outgoing>
+      <outgoing>SequenceFlow_Fraud_Deny</outgoing>
+    </exclusiveGateway>
+    <sequenceFlow id="SequenceFlow_Fraud_Allow" sourceRef="Gateway_FraudDecision" targetRef="Task_MarkApproved">
+      <conditionExpression xsi:type="tFormalExpression">${fraudDecision == 'ALLOW'}</conditionExpression>
+    </sequenceFlow>
+    <serviceTask id="Task_MarkApproved" name="MARK_APPROVED">
+      <extensionElements>
+        <zeebe:taskDefinition type="mark-status" retries="3" />
+      </extensionElements>
+      <incoming>SequenceFlow_Fraud_Allow</incoming>
+      <outgoing>SequenceFlow_Approved_Credit</outgoing>
+    </serviceTask>
+    <sequenceFlow id="SequenceFlow_Fraud_Manual" sourceRef="Gateway_FraudDecision" targetRef="Task_MarkManualReview">
+      <conditionExpression xsi:type="tFormalExpression">${fraudDecision == 'MANUAL_REVIEW'}</conditionExpression>
+    </sequenceFlow>
+    <serviceTask id="Task_MarkManualReview" name="MARK_MANUAL_REVIEW">
+      <extensionElements>
+        <zeebe:taskDefinition type="mark-status" retries="3" />
+      </extensionElements>
+      <incoming>SequenceFlow_Fraud_Manual</incoming>
+      <outgoing>SequenceFlow_Manual_UserTask</outgoing>
+    </serviceTask>
+    <userTask id="UserTask_ManualReview" name="Manual Fraud Review" camunda:assignee="${securityOperator}">
+      <incoming>SequenceFlow_Manual_UserTask</incoming>
+      <outgoing>SequenceFlow_UserTask_Decision</outgoing>
+    </userTask>
+    <serviceTask id="Task_AutoApprove" name="AUTO_APPROVE (Cut-off)">
+      <extensionElements>
+        <zeebe:taskDefinition type="auto-approve" retries="1" />
+      </extensionElements>
+      <incoming>SequenceFlow_Timer_AutoApprove</incoming>
+      <outgoing>SequenceFlow_AutoApprove_Decision</outgoing>
+    </serviceTask>
+    <exclusiveGateway id="Gateway_ManualDecision" name="Manual Decision">
+      <incoming>SequenceFlow_UserTask_Decision</incoming>
+      <incoming>SequenceFlow_AutoApprove_Decision</incoming>
+      <outgoing>SequenceFlow_Manual_Approve</outgoing>
+      <outgoing>SequenceFlow_Manual_Deny</outgoing>
+    </exclusiveGateway>
+    <sequenceFlow id="SequenceFlow_Manual_Approve" sourceRef="Gateway_ManualDecision" targetRef="Task_MarkApproved">
+      <conditionExpression xsi:type="tFormalExpression">${manualDecision == 'APPROVE' or autoApproved == true}</conditionExpression>
+    </sequenceFlow>
+    <sequenceFlow id="SequenceFlow_Fraud_Deny" sourceRef="Gateway_FraudDecision" targetRef="Task_InitiateRefund">
+      <conditionExpression xsi:type="tFormalExpression">${fraudDecision == 'DENY'}</conditionExpression>
+    </sequenceFlow>
+    <sequenceFlow id="SequenceFlow_Manual_Deny" sourceRef="Gateway_ManualDecision" targetRef="Task_InitiateRefund">
+      <conditionExpression xsi:type="tFormalExpression">${manualDecision == 'DENY'}</conditionExpression>
+    </sequenceFlow>
+    <serviceTask id="Task_CreditMerchant" name="CREDIT_MERCHANT">
+      <extensionElements>
+        <zeebe:taskDefinition type="credit-merchant" retries="3" />
+      </extensionElements>
+      <incoming>SequenceFlow_Approved_Credit</incoming>
+      <outgoing>Flow_03xee5s</outgoing>
+    </serviceTask>
+    <exclusiveGateway id="Gateway_CreditResult" name="Credit Result">
+      <incoming>Flow_03xee5s</incoming>
+      <outgoing>SequenceFlow_Credit_Success</outgoing>
+      <outgoing>Flow_0i4xb63</outgoing>
+    </exclusiveGateway>
+    <sequenceFlow id="SequenceFlow_Credit_Success" sourceRef="Gateway_CreditResult" targetRef="Task_MarkCompleted">
+      <conditionExpression xsi:type="tFormalExpression">${creditSuccessful == true}</conditionExpression>
+    </sequenceFlow>
+    <serviceTask id="Task_MarkCompleted" name="MARK_COMPLETED">
+      <extensionElements>
+        <zeebe:taskDefinition type="mark-status" retries="3" />
+      </extensionElements>
+      <incoming>SequenceFlow_Credit_Success</incoming>
+      <outgoing>Flow_18055hm</outgoing>
+    </serviceTask>
+    <parallelGateway id="ParallelGateway_Notifications" name="Parallel Notifications">
+      <incoming>Flow_18055hm</incoming>
+      <outgoing>Flow_1z0bgqs</outgoing>
+      <outgoing>Flow_1fr3sr9</outgoing>
+    </parallelGateway>
+    <serviceTask id="Task_NotifyCustomer" name="NOTIFY_CUSTOMER">
+      <extensionElements>
+        <zeebe:taskDefinition type="notify-customer" retries="3" />
+      </extensionElements>
+      <incoming>Flow_1fr3sr9</incoming>
+      <outgoing>Flow_1tjtcvb</outgoing>
+    </serviceTask>
+    <serviceTask id="Task_PublishEvent" name="PUBLISH_EVENT">
+      <extensionElements>
+        <zeebe:taskDefinition type="publish-event" retries="3" />
+      </extensionElements>
+      <incoming>Flow_1z0bgqs</incoming>
+      <outgoing>Flow_15wvfb4</outgoing>
+    </serviceTask>
+    <parallelGateway id="ParallelGateway_JoinNotifications" name="Join Notifications">
+      <incoming>Flow_15wvfb4</incoming>
+      <incoming>Flow_1tjtcvb</incoming>
+      <outgoing>SequenceFlow_Join_EndSuccess</outgoing>
+    </parallelGateway>
+    <endEvent id="EndEvent_Success" name="Payment Completed">
+      <incoming>SequenceFlow_Join_EndSuccess</incoming>
+    </endEvent>
+    <serviceTask id="Task_InitiateRefund" name="INITIATE_REFUND">
+      <extensionElements>
+        <zeebe:taskDefinition type="initiate-refund" retries="3" />
+      </extensionElements>
+      <incoming>SequenceFlow_Fraud_Deny</incoming>
+      <incoming>SequenceFlow_Manual_Deny</incoming>
+      <incoming>Flow_0i4xb63</incoming>
+      <outgoing>SequenceFlow_Initiate_Refund</outgoing>
+    </serviceTask>
+    <serviceTask id="Task_RefundFunds" name="REFUND_FUNDS">
+      <extensionElements>
+        <zeebe:taskDefinition type="refund-funds" retries="5" />
+      </extensionElements>
+      <incoming>SequenceFlow_Initiate_Refund</incoming>
+      <incoming>Flow_11s85eb</incoming>
+      <outgoing>SequenceFlow_Refund_Result</outgoing>
+    </serviceTask>
+    <exclusiveGateway id="Gateway_RefundResult" name="Refund Result">
+      <incoming>SequenceFlow_Refund_Result</incoming>
+      <outgoing>SequenceFlow_Refund_Success</outgoing>
+      <outgoing>SequenceFlow_Refund_Retry</outgoing>
+      <outgoing>SequenceFlow_Refund_Fail</outgoing>
+      <outgoing>Flow_0p8h2kf</outgoing>
+      <outgoing>Flow_0cxijwh</outgoing>
+    </exclusiveGateway>
+    <sequenceFlow id="SequenceFlow_Refund_Success" sourceRef="Gateway_RefundResult" targetRef="Task_MarkRefunded">
+      <conditionExpression xsi:type="tFormalExpression">${refundSuccessful == true}</conditionExpression>
+    </sequenceFlow>
+    <serviceTask id="Task_MarkRefunded" name="MARK_REFUNDED">
+      <extensionElements>
+        <zeebe:taskDefinition type="mark-status" retries="3" />
+      </extensionElements>
+      <incoming>SequenceFlow_Refund_Success</incoming>
+      <outgoing>SequenceFlow_Refunded_Parallel</outgoing>
+      <outgoing>Flow_13gfgkz</outgoing>
+    </serviceTask>
+    <parallelGateway id="ParallelGateway_RefundNotify" name="Start Refund Notifications">
+      <incoming>SequenceFlow_Refunded_Parallel</incoming>
+      <outgoing>SequenceFlow_Refund_NotifyCustomer</outgoing>
+      <outgoing>SequenceFlow_Refund_NotifySecurity</outgoing>
+      <outgoing>SequenceFlow_Refund_Publish</outgoing>
+    </parallelGateway>
+    <serviceTask id="Task_NotifyRefunded" name="NOTIFY_REFUNDED">
+      <extensionElements>
+        <zeebe:taskDefinition type="notify-customer" retries="3" />
+      </extensionElements>
+      <incoming>SequenceFlow_Refund_NotifyCustomer</incoming>
+      <outgoing>SequenceFlow_RefundNotify_Join</outgoing>
+    </serviceTask>
+    <serviceTask id="Task_NotifySecurity" name="NOTIFY_SECURITY">
+      <extensionElements>
+        <zeebe:taskDefinition type="notify-security" retries="3" />
+      </extensionElements>
+      <incoming>SequenceFlow_Refund_NotifySecurity</incoming>
+      <outgoing>SequenceFlow_Security_Join</outgoing>
+    </serviceTask>
+    <serviceTask id="Task_PublishRefund" name="PUBLISH_REFUND_EVENT">
+      <extensionElements>
+        <zeebe:taskDefinition type="publish-event" retries="3" />
+      </extensionElements>
+      <incoming>SequenceFlow_Refund_Publish</incoming>
+      <outgoing>SequenceFlow_PublishRefund_Join</outgoing>
+    </serviceTask>
+    <parallelGateway id="ParallelGateway_JoinRefund" name="Join Refund Notifications">
+      <incoming>SequenceFlow_RefundNotify_Join</incoming>
+      <incoming>SequenceFlow_Security_Join</incoming>
+      <incoming>SequenceFlow_PublishRefund_Join</incoming>
+      <outgoing>SequenceFlow_Join_EndRefunded</outgoing>
+    </parallelGateway>
+    <endEvent id="EndEvent_Refunded" name="Payment Refunded">
+      <incoming>SequenceFlow_Join_EndRefunded</incoming>
+      <incoming>Flow_1ai569m</incoming>
+    </endEvent>
+    <sequenceFlow id="SequenceFlow_Refund_Fail" sourceRef="Gateway_RefundResult" targetRef="Task_MarkFailed">
+      <conditionExpression xsi:type="tFormalExpression">${refundSuccessful == false and retryCount &gt;= 3}</conditionExpression>
+    </sequenceFlow>
+    <serviceTask id="Task_MarkFailed" name="MARK_FAILED">
+      <extensionElements>
+        <zeebe:taskDefinition type="mark-status" retries="1" />
+      </extensionElements>
+      <incoming>SequenceFlow_Refund_Fail</incoming>
+      <incoming>Flow_0cxijwh</incoming>
+      <outgoing>SequenceFlow_Failed_Alert</outgoing>
+      <outgoing>Flow_0loes3e</outgoing>
+    </serviceTask>
+    <serviceTask id="Task_AlertOperator" name="ALERT_OPERATOR">
+      <extensionElements>
+        <zeebe:taskDefinition type="alert-operator" retries="1" />
+      </extensionElements>
+      <incoming>SequenceFlow_Failed_Alert</incoming>
+      <incoming>Flow_0loes3e</incoming>
+      <outgoing>SequenceFlow_Alert_EndFailed</outgoing>
+      <outgoing>Flow_0ubc8iw</outgoing>
+    </serviceTask>
+    <endEvent id="EndEvent_Failed" name="Payment Failed">
+      <incoming>SequenceFlow_Alert_EndFailed</incoming>
+      <incoming>Flow_0ubc8iw</incoming>
+    </endEvent>
+    <sequenceFlow id="SequenceFlow_Refund_Retry" sourceRef="Gateway_RefundResult" targetRef="Task_RetryRefund">
+      <conditionExpression xsi:type="tFormalExpression">${refundSuccessful == false and retryCount &lt; 3}</conditionExpression>
+    </sequenceFlow>
+    <serviceTask id="Task_RetryRefund" name="RETRY_REFUND">
+      <extensionElements>
+        <zeebe:taskDefinition type="retry-refund" retries="1" />
+      </extensionElements>
+      <incoming>SequenceFlow_Refund_Retry</incoming>
+      <incoming>Flow_0p8h2kf</incoming>
+      <outgoing>SequenceFlow_Retry_Delay</outgoing>
+      <outgoing>Flow_1h73ium</outgoing>
+    </serviceTask>
+    <intermediateCatchEvent id="IntermediateCatchEvent_Delay" name="Retry Delay (30s)">
+      <incoming>SequenceFlow_Retry_Delay</incoming>
+      <incoming>Flow_1h73ium</incoming>
+      <outgoing>SequenceFlow_Delay_BackToRefund</outgoing>
+      <outgoing>Flow_11s85eb</outgoing>
+      <timerEventDefinition>
+        <timeDuration>PT30S</timeDuration>
+      </timerEventDefinition>
+    </intermediateCatchEvent>
+    <sequenceFlow id="SequenceFlow_Delay_BackToRefund" sourceRef="IntermediateCatchEvent_Delay" targetRef="Task_RefundFunds" />
+    <sequenceFlow id="SequenceFlow_Start_Create" sourceRef="StartEvent_Payment" targetRef="Task_CreatePayment" />
+    <sequenceFlow id="SequenceFlow_Create_Reserve" sourceRef="Task_CreatePayment" targetRef="Task_ReserveFunds" />
+    <sequenceFlow id="SequenceFlow_Reserve_Parallel" sourceRef="Task_ReserveFunds" targetRef="ParallelGateway_StartParallel" />
+    <sequenceFlow id="SequenceFlow_Parallel_Debit" sourceRef="ParallelGateway_StartParallel" targetRef="Task_DebitFunds" />
+    <sequenceFlow id="SequenceFlow_Parallel_Fraud" sourceRef="ParallelGateway_StartParallel" targetRef="Task_FraudCheck" />
+    <sequenceFlow id="SequenceFlow_Debit_Join" sourceRef="Task_DebitFunds" targetRef="ParallelGateway_JoinParallel" />
+    <sequenceFlow id="SequenceFlow_Fraud_Join" sourceRef="Task_FraudCheck" targetRef="ParallelGateway_JoinParallel" />
+    <sequenceFlow id="SequenceFlow_Join_FraudDecision" sourceRef="ParallelGateway_JoinParallel" targetRef="Gateway_FraudDecision" />
+    <sequenceFlow id="SequenceFlow_Approved_Credit" sourceRef="Task_MarkApproved" targetRef="Task_CreditMerchant" />
+    <sequenceFlow id="SequenceFlow_Manual_UserTask" sourceRef="Task_MarkManualReview" targetRef="UserTask_ManualReview" />
+    <sequenceFlow id="SequenceFlow_UserTask_Decision" sourceRef="UserTask_ManualReview" targetRef="Gateway_ManualDecision" />
+    <sequenceFlow id="SequenceFlow_Timer_AutoApprove" sourceRef="BoundaryEvent_Timer" targetRef="Task_AutoApprove" />
+    <sequenceFlow id="SequenceFlow_AutoApprove_Decision" sourceRef="Task_AutoApprove" targetRef="Gateway_ManualDecision" />
+    <sequenceFlow id="SequenceFlow_Join_EndSuccess" sourceRef="ParallelGateway_JoinNotifications" targetRef="EndEvent_Success" />
+    <sequenceFlow id="SequenceFlow_Initiate_Refund" sourceRef="Task_InitiateRefund" targetRef="Task_RefundFunds" />
+    <sequenceFlow id="SequenceFlow_Refund_Result" sourceRef="Task_RefundFunds" targetRef="Gateway_RefundResult" />
+    <sequenceFlow id="SequenceFlow_Refunded_Parallel" sourceRef="Task_MarkRefunded" targetRef="ParallelGateway_RefundNotify" />
+    <sequenceFlow id="SequenceFlow_Refund_NotifyCustomer" sourceRef="ParallelGateway_RefundNotify" targetRef="Task_NotifyRefunded" />
+    <sequenceFlow id="SequenceFlow_Refund_NotifySecurity" sourceRef="ParallelGateway_RefundNotify" targetRef="Task_NotifySecurity" />
+    <sequenceFlow id="SequenceFlow_Refund_Publish" sourceRef="ParallelGateway_RefundNotify" targetRef="Task_PublishRefund" />
+    <sequenceFlow id="SequenceFlow_RefundNotify_Join" sourceRef="Task_NotifyRefunded" targetRef="ParallelGateway_JoinRefund" />
+    <sequenceFlow id="SequenceFlow_Security_Join" sourceRef="Task_NotifySecurity" targetRef="ParallelGateway_JoinRefund" />
+    <sequenceFlow id="SequenceFlow_PublishRefund_Join" sourceRef="Task_PublishRefund" targetRef="ParallelGateway_JoinRefund" />
+    <sequenceFlow id="SequenceFlow_Join_EndRefunded" sourceRef="ParallelGateway_JoinRefund" targetRef="EndEvent_Refunded" />
+    <sequenceFlow id="SequenceFlow_Failed_Alert" sourceRef="Task_MarkFailed" targetRef="Task_AlertOperator" />
+    <sequenceFlow id="SequenceFlow_Alert_EndFailed" sourceRef="Task_AlertOperator" targetRef="EndEvent_Failed" />
+    <sequenceFlow id="SequenceFlow_Retry_Delay" sourceRef="Task_RetryRefund" targetRef="IntermediateCatchEvent_Delay" />
+    <sequenceFlow id="Flow_05tmgla" sourceRef="ParallelGateway_JoinParallel" targetRef="Gateway_FraudDecision" />
+    <intermediateCatchEvent id="BoundaryEvent_Timer" name="20 min Cut-off">
+      <outgoing>SequenceFlow_Timer_AutoApprove</outgoing>
+      <timerEventDefinition id="TimerEventDefinition_1wx187h">
+        <timeDuration>PT20M</timeDuration>
+      </timerEventDefinition>
+    </intermediateCatchEvent>
+    <sequenceFlow id="Flow_0p8h2kf" sourceRef="Gateway_RefundResult" targetRef="Task_RetryRefund" />
+    <sequenceFlow id="Flow_0cxijwh" sourceRef="Gateway_RefundResult" targetRef="Task_MarkFailed" />
+    <sequenceFlow id="Flow_0loes3e" sourceRef="Task_MarkFailed" targetRef="Task_AlertOperator" />
+    <sequenceFlow id="Flow_0ubc8iw" sourceRef="Task_AlertOperator" targetRef="EndEvent_Failed" />
+    <sequenceFlow id="Flow_03xee5s" sourceRef="Task_CreditMerchant" targetRef="Gateway_CreditResult" />
+    <sequenceFlow id="Flow_1z0bgqs" sourceRef="ParallelGateway_Notifications" targetRef="Task_PublishEvent" />
+    <sequenceFlow id="Flow_1fr3sr9" sourceRef="ParallelGateway_Notifications" targetRef="Task_NotifyCustomer" />
+    <sequenceFlow id="Flow_18055hm" sourceRef="Task_MarkCompleted" targetRef="ParallelGateway_Notifications" />
+    <sequenceFlow id="Flow_15wvfb4" sourceRef="Task_PublishEvent" targetRef="ParallelGateway_JoinNotifications" />
+    <sequenceFlow id="Flow_1tjtcvb" sourceRef="Task_NotifyCustomer" targetRef="ParallelGateway_JoinNotifications" />
+    <sequenceFlow id="Flow_0i4xb63" sourceRef="Gateway_CreditResult" targetRef="Task_InitiateRefund" />
+    <sequenceFlow id="Flow_1h73ium" sourceRef="Task_RetryRefund" targetRef="IntermediateCatchEvent_Delay" />
+    <sequenceFlow id="Flow_11s85eb" sourceRef="IntermediateCatchEvent_Delay" targetRef="Task_RefundFunds" />
+    <parallelGateway id="Gateway_080jv4m" name="Parallel Notifications">
+      <incoming>Flow_13gfgkz</incoming>
+      <outgoing>Flow_17l2pop</outgoing>
+      <outgoing>Flow_16w0qum</outgoing>
+    </parallelGateway>
+    <serviceTask id="Activity_13aavpl" name="NOTIFY_CUSTOMER">
+      <extensionElements>
+        <zeebe:taskDefinition type="notify-customer" retries="3" />
+      </extensionElements>
+      <incoming>Flow_17l2pop</incoming>
+      <outgoing>Flow_1t0lvq3</outgoing>
+    </serviceTask>
+    <parallelGateway id="Gateway_1ajhlbl" name="Join Notifications">
+      <incoming>Flow_1t0lvq3</incoming>
+      <incoming>Flow_19b5xhv</incoming>
+      <outgoing>Flow_1ai569m</outgoing>
+    </parallelGateway>
+    <sequenceFlow id="Flow_17l2pop" sourceRef="Gateway_080jv4m" targetRef="Activity_13aavpl" />
+    <sequenceFlow id="Flow_1t0lvq3" sourceRef="Activity_13aavpl" targetRef="Gateway_1ajhlbl" />
+    <serviceTask id="Activity_0y3kavf" name="PUBLISH_EVENT">
+      <extensionElements>
+        <zeebe:taskDefinition type="publish-event" retries="3" />
+      </extensionElements>
+      <incoming>Flow_16w0qum</incoming>
+      <outgoing>Flow_19b5xhv</outgoing>
+    </serviceTask>
+    <sequenceFlow id="Flow_16w0qum" sourceRef="Gateway_080jv4m" targetRef="Activity_0y3kavf" />
+    <sequenceFlow id="Flow_19b5xhv" sourceRef="Activity_0y3kavf" targetRef="Gateway_1ajhlbl" />
+    <sequenceFlow id="Flow_1ai569m" sourceRef="Gateway_1ajhlbl" targetRef="EndEvent_Refunded" />
+    <sequenceFlow id="Flow_13gfgkz" sourceRef="Task_MarkRefunded" targetRef="Gateway_080jv4m" />
+    <association id="Association_Pivot" sourceRef="Task_DebitFunds" targetRef="TextAnnotation_Pivot" />
+    <association id="Association_Pivot2" sourceRef="Task_CreditMerchant" targetRef="TextAnnotation_Pivot2" />
+    <textAnnotation id="TextAnnotation_1ngclhl">
+      <text>ALLOW</text>
+    </textAnnotation>
+    <association id="Association_1uhp1rt" associationDirection="None" sourceRef="SequenceFlow_Fraud_Allow" targetRef="TextAnnotation_1ngclhl" />
+    <textAnnotation id="TextAnnotation_02hcu3u">
+      <text>DENY</text>
+    </textAnnotation>
+    <association id="Association_0mfd8ip" associationDirection="None" sourceRef="SequenceFlow_Fraud_Deny" targetRef="TextAnnotation_02hcu3u" />
+    <textAnnotation id="TextAnnotation_0v28w7l">
+      <text>MANUAL_REVIEW</text>
+    </textAnnotation>
+    <association id="Association_0hmdcso" associationDirection="None" sourceRef="SequenceFlow_Fraud_Manual" targetRef="TextAnnotation_0v28w7l" />
+    <textAnnotation id="TextAnnotation_1ewk3mf">
+      <text>DENY</text>
+    </textAnnotation>
+    <association id="Association_0t7tt0h" associationDirection="None" sourceRef="Flow_0i4xb63" targetRef="TextAnnotation_1ewk3mf" />
+    <textAnnotation id="TextAnnotation_1pvfl2z">
+      <text>SUCCESS</text>
+    </textAnnotation>
+    <association id="Association_1hlt6xk" associationDirection="None" sourceRef="SequenceFlow_Credit_Success" targetRef="TextAnnotation_1pvfl2z" />
+    <textAnnotation id="TextAnnotation_1oxc01j">
+      <text>RETRY (3)</text>
+    </textAnnotation>
+    <association id="Association_17kpuxm" associationDirection="None" sourceRef="Flow_0p8h2kf" targetRef="TextAnnotation_1oxc01j" />
+    <textAnnotation id="TextAnnotation_0khufw0">
+      <text>SUCCESS</text>
+    </textAnnotation>
+    <association id="Association_0j949uv" associationDirection="None" sourceRef="SequenceFlow_Refund_Success" targetRef="TextAnnotation_0khufw0" />
+    <textAnnotation id="TextAnnotation_1ph2mwm">
+      <text>FAIL</text>
+    </textAnnotation>
+    <association id="Association_0wf5cry" associationDirection="None" sourceRef="Flow_0cxijwh" targetRef="TextAnnotation_1ph2mwm" />
+  </process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="orchestrpay-payment-process">
+      <bpmndi:BPMNShape id="Task_CreatePayment_di" bpmnElement="Task_CreatePayment">
+        <dc:Bounds x="250" y="390" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_ReserveFunds_di" bpmnElement="Task_ReserveFunds">
+        <dc:Bounds x="390" y="390" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ParallelGateway_StartParallel_di" bpmnElement="ParallelGateway_StartParallel">
+        <dc:Bounds x="530" y="405" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="590" y="423" width="64" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_DebitFunds_di" bpmnElement="Task_DebitFunds">
+        <dc:Bounds x="620" y="320" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ParallelGateway_JoinParallel_di" bpmnElement="ParallelGateway_JoinParallel">
+        <dc:Bounds x="760" y="405" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="754" y="383" width="61" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_FraudDecision_di" bpmnElement="Gateway_FraudDecision" isMarkerVisible="true">
+        <dc:Bounds x="850" y="405" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="803" y="463" width="74" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_MarkManualReview_di" bpmnElement="Task_MarkManualReview">
+        <dc:Bounds x="940" y="390" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_MarkApproved_di" bpmnElement="Task_MarkApproved">
+        <dc:Bounds x="930" y="210" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="UserTask_ManualReview_di" bpmnElement="UserTask_ManualReview">
+        <dc:Bounds x="1080" y="390" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_ManualDecision_di" bpmnElement="Gateway_ManualDecision" isMarkerVisible="true">
+        <dc:Bounds x="1215" y="405" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1259" y="403" width="82" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_AutoApprove_di" bpmnElement="Task_AutoApprove">
+        <dc:Bounds x="1190" y="280" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_1jt4o9b_di" bpmnElement="BoundaryEvent_Timer">
+        <dc:Bounds x="1112" y="302" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1095" y="278" width="70" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_CreditMerchant_di" bpmnElement="Task_CreditMerchant">
+        <dc:Bounds x="1100" y="120" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ParallelGateway_Notifications_di" bpmnElement="ParallelGateway_Notifications">
+        <dc:Bounds x="1545" y="245" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1489" y="236" width="61" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_PublishEvent_di" bpmnElement="Task_PublishEvent">
+        <dc:Bounds x="1460" y="330" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_NotifyCustomer_di" bpmnElement="Task_NotifyCustomer">
+        <dc:Bounds x="1590" y="330" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EndEvent_Success_di" bpmnElement="EndEvent_Success">
+        <dc:Bounds x="1552" y="542" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1543" y="578" width="54" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ParallelGateway_JoinNotifications_di" bpmnElement="ParallelGateway_JoinNotifications">
+        <dc:Bounds x="1545" y="455" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1528" y="431" width="84" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_MarkCompleted_di" bpmnElement="Task_MarkCompleted">
+        <dc:Bounds x="1520" y="120" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_CreditResult_di" bpmnElement="Gateway_CreditResult" isMarkerVisible="true">
+        <dc:Bounds x="1405" y="135" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1397" y="111" width="65" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="StartEvent_Payment_di" bpmnElement="StartEvent_Payment">
+        <dc:Bounds x="180" y="412" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="155" y="393" width="85" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_FraudCheck_di" bpmnElement="Task_FraudCheck">
+        <dc:Bounds x="620" y="470" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_InitiateRefund_di" bpmnElement="Task_InitiateRefund">
+        <dc:Bounds x="1190" y="510" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_RefundFunds_di" bpmnElement="Task_RefundFunds">
+        <dc:Bounds x="1190" y="640" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="IntermediateCatchEvent_Delay_di" bpmnElement="IntermediateCatchEvent_Delay">
+        <dc:Bounds x="1052" y="662" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1027" y="643" width="86" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_RefundResult_di" bpmnElement="Gateway_RefundResult" isMarkerVisible="true">
+        <dc:Bounds x="1215" y="765" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1263.5" y="761" width="71" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_RetryRefund_di" bpmnElement="Task_RetryRefund">
+        <dc:Bounds x="1020" y="750" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_MarkRefunded_di" bpmnElement="Task_MarkRefunded">
+        <dc:Bounds x="1380" y="750" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_MarkFailed_di" bpmnElement="Task_MarkFailed">
+        <dc:Bounds x="1190" y="880" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_AlertOperator_di" bpmnElement="Task_AlertOperator">
+        <dc:Bounds x="1020" y="880" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EndEvent_Failed_di" bpmnElement="EndEvent_Failed">
+        <dc:Bounds x="1052" y="1002" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1032" y="1038" width="77" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EndEvent_Refunded_di" bpmnElement="EndEvent_Refunded">
+        <dc:Bounds x="1582" y="1107" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1576" y="1143" width="48" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_15twsyx" bpmnElement="Gateway_080jv4m">
+        <dc:Bounds x="1575" y="810" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1519" y="801" width="61" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_1cgf8h2" bpmnElement="Activity_13aavpl">
+        <dc:Bounds x="1620" y="895" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_1cmqv57" bpmnElement="Gateway_1ajhlbl">
+        <dc:Bounds x="1575" y="1020" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1558" y="996" width="84" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_1aiyn3l" bpmnElement="Activity_0y3kavf">
+        <dc:Bounds x="1480" y="905" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Association_1uhp1rt_di" bpmnElement="Association_1uhp1rt">
+        <di:waypoint x="875" y="340" />
+        <di:waypoint x="900" y="340" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Association_0mfd8ip_di" bpmnElement="Association_0mfd8ip">
+        <di:waypoint x="880" y="550" />
+        <di:waypoint x="900" y="570" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Association_0hmdcso_di" bpmnElement="Association_0hmdcso">
+        <di:waypoint x="910" y="430" />
+        <di:waypoint x="920" y="491" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Association_1hlt6xk_di" bpmnElement="Association_1hlt6xk">
+        <di:waypoint x="1487.5" y="160" />
+        <di:waypoint x="1470" y="110" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Association_0t7tt0h_di" bpmnElement="Association_0t7tt0h">
+        <di:waypoint x="1430" y="230" />
+        <di:waypoint x="1380" y="220" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Association_17kpuxm_di" bpmnElement="Association_17kpuxm">
+        <di:waypoint x="1167.5" y="790" />
+        <di:waypoint x="1150" y="770" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Association_0j949uv_di" bpmnElement="Association_0j949uv">
+        <di:waypoint x="1350" y="790" />
+        <di:waypoint x="1350" y="740" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Association_0wf5cry_di" bpmnElement="Association_0wf5cry">
+        <di:waypoint x="1240" y="847.5" />
+        <di:waypoint x="1270" y="843" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="SequenceFlow_Fraud_Allow_di" bpmnElement="SequenceFlow_Fraud_Allow">
+        <di:waypoint x="875" y="405" />
+        <di:waypoint x="875" y="250" />
+        <di:waypoint x="930" y="250" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="SequenceFlow_Fraud_Manual_di" bpmnElement="SequenceFlow_Fraud_Manual">
+        <di:waypoint x="900" y="430" />
+        <di:waypoint x="940" y="430" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="SequenceFlow_Manual_Approve_di" bpmnElement="SequenceFlow_Manual_Approve">
+        <di:waypoint x="1265" y="430" />
+        <di:waypoint x="1400" y="430" />
+        <di:waypoint x="1400" y="250" />
+        <di:waypoint x="1030" y="250" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="SequenceFlow_Fraud_Deny_di" bpmnElement="SequenceFlow_Fraud_Deny">
+        <di:waypoint x="875" y="455" />
+        <di:waypoint x="875" y="550" />
+        <di:waypoint x="1190" y="550" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="SequenceFlow_Manual_Deny_di" bpmnElement="SequenceFlow_Manual_Deny">
+        <di:waypoint x="1240" y="455" />
+        <di:waypoint x="1240" y="510" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="SequenceFlow_Credit_Success_di" bpmnElement="SequenceFlow_Credit_Success">
+        <di:waypoint x="1455" y="160" />
+        <di:waypoint x="1520" y="160" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="SequenceFlow_Refund_Success_di" bpmnElement="SequenceFlow_Refund_Success">
+        <di:waypoint x="1265" y="790" />
+        <di:waypoint x="1380" y="790" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="SequenceFlow_Start_Create_di" bpmnElement="SequenceFlow_Start_Create">
+        <di:waypoint x="216" y="430" />
+        <di:waypoint x="250" y="430" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="SequenceFlow_Create_Reserve_di" bpmnElement="SequenceFlow_Create_Reserve">
+        <di:waypoint x="350" y="430" />
+        <di:waypoint x="390" y="430" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="SequenceFlow_Reserve_Parallel_di" bpmnElement="SequenceFlow_Reserve_Parallel">
+        <di:waypoint x="490" y="430" />
+        <di:waypoint x="530" y="430" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="SequenceFlow_Parallel_Debit_di" bpmnElement="SequenceFlow_Parallel_Debit">
+        <di:waypoint x="555" y="405" />
+        <di:waypoint x="555" y="360" />
+        <di:waypoint x="620" y="360" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="SequenceFlow_Parallel_Fraud_di" bpmnElement="SequenceFlow_Parallel_Fraud">
+        <di:waypoint x="555" y="455" />
+        <di:waypoint x="555" y="510" />
+        <di:waypoint x="620" y="510" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="SequenceFlow_Debit_Join_di" bpmnElement="SequenceFlow_Debit_Join">
+        <di:waypoint x="720" y="360" />
+        <di:waypoint x="740" y="360" />
+        <di:waypoint x="740" y="430" />
+        <di:waypoint x="760" y="430" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="SequenceFlow_Fraud_Join_di" bpmnElement="SequenceFlow_Fraud_Join">
+        <di:waypoint x="720" y="510" />
+        <di:waypoint x="740" y="510" />
+        <di:waypoint x="740" y="430" />
+        <di:waypoint x="760" y="430" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="SequenceFlow_Approved_Credit_di" bpmnElement="SequenceFlow_Approved_Credit">
+        <di:waypoint x="980" y="210" />
+        <di:waypoint x="980" y="160" />
+        <di:waypoint x="1100" y="160" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="SequenceFlow_Manual_UserTask_di" bpmnElement="SequenceFlow_Manual_UserTask">
+        <di:waypoint x="1040" y="430" />
+        <di:waypoint x="1080" y="430" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="SequenceFlow_UserTask_Decision_di" bpmnElement="SequenceFlow_UserTask_Decision">
+        <di:waypoint x="1180" y="430" />
+        <di:waypoint x="1215" y="430" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="SequenceFlow_Timer_AutoApprove_di" bpmnElement="SequenceFlow_Timer_AutoApprove">
+        <di:waypoint x="1148" y="320" />
+        <di:waypoint x="1190" y="320" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="SequenceFlow_AutoApprove_Decision_di" bpmnElement="SequenceFlow_AutoApprove_Decision">
+        <di:waypoint x="1240" y="360" />
+        <di:waypoint x="1240" y="405" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="SequenceFlow_Join_EndSuccess_di" bpmnElement="SequenceFlow_Join_EndSuccess">
+        <di:waypoint x="1570" y="505" />
+        <di:waypoint x="1570" y="542" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="SequenceFlow_Initiate_Refund_di" bpmnElement="SequenceFlow_Initiate_Refund">
+        <di:waypoint x="1240" y="590" />
+        <di:waypoint x="1240" y="640" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="SequenceFlow_Refund_Result_di" bpmnElement="SequenceFlow_Refund_Result">
+        <di:waypoint x="1240" y="720" />
+        <di:waypoint x="1240" y="765" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_05tmgla_di" bpmnElement="Flow_05tmgla">
+        <di:waypoint x="810" y="430" />
+        <di:waypoint x="850" y="430" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_0p8h2kf_di" bpmnElement="Flow_0p8h2kf">
+        <di:waypoint x="1215" y="790" />
+        <di:waypoint x="1120" y="790" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_0cxijwh_di" bpmnElement="Flow_0cxijwh">
+        <di:waypoint x="1240" y="815" />
+        <di:waypoint x="1240" y="880" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_0loes3e_di" bpmnElement="Flow_0loes3e">
+        <di:waypoint x="1190" y="920" />
+        <di:waypoint x="1120" y="920" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_0ubc8iw_di" bpmnElement="Flow_0ubc8iw">
+        <di:waypoint x="1070" y="960" />
+        <di:waypoint x="1070" y="1002" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_03xee5s_di" bpmnElement="Flow_03xee5s">
+        <di:waypoint x="1200" y="160" />
+        <di:waypoint x="1405" y="160" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_1z0bgqs_di" bpmnElement="Flow_1z0bgqs">
+        <di:waypoint x="1545" y="270" />
+        <di:waypoint x="1510" y="270" />
+        <di:waypoint x="1510" y="330" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_1fr3sr9_di" bpmnElement="Flow_1fr3sr9">
+        <di:waypoint x="1595" y="270" />
+        <di:waypoint x="1640" y="270" />
+        <di:waypoint x="1640" y="330" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_18055hm_di" bpmnElement="Flow_18055hm">
+        <di:waypoint x="1570" y="200" />
+        <di:waypoint x="1570" y="245" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_15wvfb4_di" bpmnElement="Flow_15wvfb4">
+        <di:waypoint x="1510" y="410" />
+        <di:waypoint x="1510" y="480" />
+        <di:waypoint x="1545" y="480" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_1tjtcvb_di" bpmnElement="Flow_1tjtcvb">
+        <di:waypoint x="1640" y="410" />
+        <di:waypoint x="1640" y="480" />
+        <di:waypoint x="1595" y="480" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_0i4xb63_di" bpmnElement="Flow_0i4xb63">
+        <di:waypoint x="1430" y="185" />
+        <di:waypoint x="1430" y="550" />
+        <di:waypoint x="1290" y="550" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_1h73ium_di" bpmnElement="Flow_1h73ium">
+        <di:waypoint x="1070" y="750" />
+        <di:waypoint x="1070" y="698" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_11s85eb_di" bpmnElement="Flow_11s85eb">
+        <di:waypoint x="1088" y="680" />
+        <di:waypoint x="1190" y="680" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="TextAnnotation_1ngclhl_di" bpmnElement="TextAnnotation_1ngclhl">
+        <dc:Bounds x="900" y="325" width="60" height="30" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="TextAnnotation_02hcu3u_di" bpmnElement="TextAnnotation_02hcu3u">
+        <dc:Bounds x="900" y="570" width="50" height="30" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="TextAnnotation_0v28w7l_di" bpmnElement="TextAnnotation_0v28w7l">
+        <dc:Bounds x="920" y="495" width="120" height="30" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="TextAnnotation_1pvfl2z_di" bpmnElement="TextAnnotation_1pvfl2z">
+        <dc:Bounds x="1470" y="80" width="100" height="30" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="TextAnnotation_1ewk3mf_di" bpmnElement="TextAnnotation_1ewk3mf">
+        <dc:Bounds x="1370" y="190" width="50" height="30" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="TextAnnotation_1oxc01j_di" bpmnElement="TextAnnotation_1oxc01j">
+        <dc:Bounds x="1140" y="740" width="75" height="30" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="TextAnnotation_0khufw0_di" bpmnElement="TextAnnotation_0khufw0">
+        <dc:Bounds x="1340" y="710" width="80" height="30" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="TextAnnotation_1ph2mwm_di" bpmnElement="TextAnnotation_1ph2mwm">
+        <dc:Bounds x="1270" y="820" width="50" height="30" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_1ai569m_di" bpmnElement="Flow_1ai569m">
+        <di:waypoint x="1600" y="1070" />
+        <di:waypoint x="1600" y="1107" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_0z0bntt" bpmnElement="Flow_17l2pop">
+        <di:waypoint x="1625" y="835" />
+        <di:waypoint x="1670" y="835" />
+        <di:waypoint x="1670" y="895" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_16w0qum_di" bpmnElement="Flow_16w0qum">
+        <di:waypoint x="1575" y="835" />
+        <di:waypoint x="1530" y="835" />
+        <di:waypoint x="1530" y="905" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_0ek8hf0" bpmnElement="Flow_1t0lvq3">
+        <di:waypoint x="1670" y="975" />
+        <di:waypoint x="1670" y="1045" />
+        <di:waypoint x="1625" y="1045" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_19b5xhv_di" bpmnElement="Flow_19b5xhv">
+        <di:waypoint x="1530" y="985" />
+        <di:waypoint x="1530" y="1045" />
+        <di:waypoint x="1575" y="1045" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_13gfgkz_di" bpmnElement="Flow_13gfgkz">
+        <di:waypoint x="1480" y="790" />
+        <di:waypoint x="1600" y="790" />
+        <di:waypoint x="1600" y="810" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</definitions>
